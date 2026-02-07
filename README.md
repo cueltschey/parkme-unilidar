@@ -14,7 +14,7 @@ If building with docker:
 If building baremetal:
 - CMake
 - Make
-- G++ (or other C++ compiler)
+- G++ or clang++
 
 ## Building
 
