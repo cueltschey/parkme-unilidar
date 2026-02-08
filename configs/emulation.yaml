@@ -1,0 +1,6 @@
+emulation:
+  nof_rings: 16
+  points_per_ring: 120
+  websocket_url: "ws://localhost/ws/lidar"
+  cloud_generation_interval: 0.05
+

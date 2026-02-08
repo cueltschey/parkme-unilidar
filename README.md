@@ -15,6 +15,7 @@ If building baremetal:
 - CMake
 - Make
 - G++ or clang++
+- YAML-C++
 
 ## Building
 
