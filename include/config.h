@@ -8,7 +8,7 @@
 typedef struct parkme_cfg_s {
     uint32_t nof_rings = 16;
     uint32_t points_per_ring = 100;
-    std::string websocket_url;
+    uint64_t websocket_port;
     double cloud_generation_interval = 0.1; // seconds
     std::string mode; // "emulation" or "udp"
     std::string udp_ip;
@@ -39,8 +39,8 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.nof_rings = emu["nof_rings"].as<uint32_t>();
         if (emu["points_per_ring"])
             config.points_per_ring = emu["points_per_ring"].as<uint32_t>();
-        if (emu["websocket_url"])
-            config.websocket_url = emu["websocket_url"].as<std::string>();
+        if (emu["websocket_port"])
+            config.websocket_port = emu["websocket_port"].as<uint64_t>();
         if (emu["cloud_generation_interval"])
             config.cloud_generation_interval = emu["cloud_generation_interval"].as<double>();
     }

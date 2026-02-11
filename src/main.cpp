@@ -6,6 +6,7 @@
 
 #include "config.h"
 #include "emulation_producer.h"
+#include "consumer.h"
 #include "logger.h"
 
 int main(int argc, char* argv[]) {
@@ -27,18 +28,14 @@ int main(int argc, char* argv[]) {
     }
 
     LOG_INFO("Mode: %s", cfg.mode.c_str());
+
     if (cfg.mode == "emulation") {
         LOG_INFO("Rings: %u, Points/Ring: %u, Interval: %.3f s",
-                 cfg.nof_rings, cfg.points_per_ring, cfg.cloud_generation_interval);
-        LOG_INFO("WebSocket URL: %s", cfg.websocket_url.c_str());
-    } else if (cfg.mode == "udp") {
-        LOG_INFO("UDP IP: %s, Port: %u", cfg.udp_ip.c_str(), cfg.udp_port);
-    }
+                 cfg.nof_rings,
+                 cfg.points_per_ring,
+                 cfg.cloud_generation_interval);
 
-    std::unique_ptr<Producer> producer;
-
-    if (cfg.mode == "emulation") {
-        producer = std::make_unique<EmulationProducer>(cfg.nof_rings, cfg.points_per_ring);
+        LOG_INFO("WebSocket Port: %d", cfg.websocket_port);
     } else if (cfg.mode == "udp") {
         LOG_ERROR("UDP mode not implemented yet");
         return 1;
@@ -47,12 +44,20 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    LOG_INFO("Starting point cloud loop...");
+    // Use shared_ptr because Consumer shares ownership
+    auto producer = std::make_shared<EmulationProducer>(
+        cfg.nof_rings,
+        cfg.points_per_ring
+    );
 
+    // Consumer runs its own worker thread internally
+    Consumer consumer(producer, cfg.websocket_port);
+
+    LOG_INFO("Streaming point clouds to WebSocket...");
+
+    // Keep application alive
     while (true) {
-        auto cloud = producer->getCloud();
-        LOG_DEBUG("Received cloud id: %u, points: %zu", cloud.id, cloud.points.size());
-        std::this_thread::sleep_for(std::chrono::duration<double>(cfg.cloud_generation_interval));
+        std::this_thread::sleep_for(std::chrono::seconds(1));
     }
 
     return 0;
