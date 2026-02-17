@@ -13,6 +13,7 @@ typedef struct parkme_cfg_s {
     std::string mode; // "emulation" or "udp"
     std::string udp_ip;
     uint16_t udp_port = 0;
+    std::string obj_file;
 } parkme_cfg_t;
 
 parkme_cfg_t parse_config(const std::string& config_file) {
@@ -43,6 +44,8 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.websocket_port = emu["websocket_port"].as<uint64_t>();
         if (emu["cloud_generation_interval"])
             config.cloud_generation_interval = emu["cloud_generation_interval"].as<double>();
+        if (emu["obj_file"])
+            config.obj_file = emu["obj_file"].as<std::string>();
     }
     else if (node["testbed"]) {
         YAML::Node tb = node["testbed"];

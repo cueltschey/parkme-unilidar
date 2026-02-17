@@ -1,6 +1,7 @@
 emulation:
-  nof_rings: 16
-  points_per_ring: 120
+  nof_rings: 132
+  points_per_ring: 220
   websocket_port: 9002
   cloud_generation_interval: 0.05
+  obj_file: "car.obj"
 

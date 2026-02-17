@@ -35,17 +35,21 @@ int main(int argc, char* argv[]) {
                  cfg.points_per_ring,
                  cfg.cloud_generation_interval);
 
+        LOG_INFO("OBJ File: %s", cfg.obj_file.c_str());
         LOG_INFO("WebSocket Port: %d", cfg.websocket_port);
-    } else if (cfg.mode == "udp") {
+    } 
+    else if (cfg.mode == "udp") {
         LOG_ERROR("UDP mode not implemented yet");
         return 1;
-    } else {
+    } 
+    else {
         LOG_ERROR("Unknown mode: %s", cfg.mode.c_str());
         return 1;
     }
 
-    // Use shared_ptr because Consumer shares ownership
+    // Create producer with OBJ mesh
     auto producer = std::make_shared<EmulationProducer>(
+        cfg.obj_file,
         cfg.nof_rings,
         cfg.points_per_ring
     );
