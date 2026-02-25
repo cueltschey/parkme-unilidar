@@ -37,6 +37,16 @@ FetchContent_MakeAvailable(nlohmann_json)
 set(Boost_NO_BOOST_CMAKE ON)
 find_package(Boost REQUIRED COMPONENTS filesystem thread regex)
 
+# === PCL ===
+find_package(PCL REQUIRED COMPONENTS
+    common
+    io
+    search
+    segmentation
+)
+include_directories(${PCL_INCLUDE_DIRS})
+add_definitions(${PCL_DEFINITIONS})
+
 
 target_link_libraries(parkme_unilidar
     PRIVATE
@@ -45,6 +55,7 @@ target_link_libraries(parkme_unilidar
     nlohmann_json::nlohmann_json
     Boost::thread
     Boost::regex
+    ${PCL_LIBRARIES}
 )
 
 

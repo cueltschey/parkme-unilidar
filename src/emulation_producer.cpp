@@ -63,7 +63,7 @@ bool EmulationProducer::loadOBJ(const std::string& path) {
 	    tri.v1 = vertices_[i1 - 1];
 	    tri.v2 = vertices_[i2 - 1];
 
-	    triangles_.push_back(tri);
+	    base_triangles_.push_back(tri);
 	}
     }
 
@@ -71,6 +71,57 @@ bool EmulationProducer::loadOBJ(const std::string& path) {
               << vertices_.size() << " vertices, "
               << triangles_.size() << " triangles\n";
 
+    std::vector<Vec3> positions = {
+	{-2, 3, 0.0},
+	{4, 1.5, 0.0},
+	{-4, -2, 0.0},
+	{5, -3, 0.0}
+    };
+
+    std::vector<double> yaws = {
+	0.0,
+	M_PI / 4.0,
+	M_PI / 2.0,
+	-M_PI / 3.0
+    };
+
+    for (size_t i = 0; i < positions.size(); ++i) {
+	const auto& pos = positions[i];
+	double yaw = yaws[i];
+
+	double c = cos(yaw);
+	double s = sin(yaw);
+
+	for (const auto& tri : base_triangles_) {
+
+	    auto transform = [&](const Vec3& v) {
+		double pitch = M_PI / 2.0;
+		double cp = cos(pitch);
+		double sp = sin(pitch);
+
+		Vec3 rotated;
+		rotated.x = v.x;
+		rotated.y = cp * v.y - sp * v.z;
+		rotated.z = sp * v.y + cp * v.z;
+
+		Vec3 out;
+		out.x = c * rotated.x - s * rotated.y + pos.x;
+		out.y = s * rotated.x + c * rotated.y + pos.y;
+		out.z = rotated.z + pos.z;
+
+		return out;
+	    };
+
+	    Triangle t;
+	    t.v0 = transform(tri.v0);
+	    t.v1 = transform(tri.v1);
+	    t.v2 = transform(tri.v2);
+
+	    triangles_.push_back(t);
+	}
+    }
+
+    buildBVH();
     return true;
 }
 
@@ -78,6 +129,7 @@ unilidar_sdk2::PointUnitree
 EmulationProducer::generatePoint(double angle_horizontal,
                                  double angle_vertical)
 {
+    const Vec3 origin{0, 2.0, 0.0};
     unilidar_sdk2::PointUnitree point{};
 
     // Ray direction
@@ -86,21 +138,17 @@ EmulationProducer::generatePoint(double angle_horizontal,
     dir.y = cos(angle_vertical) * sin(angle_horizontal);
     dir.z = sin(angle_vertical);
 
-    //point.x = dir.x;
-    //point.y = dir.y;
-    //point.z = dir.z;
-    //point.intensity = 0.2;
-
     Vec3 hit;
 
-    if (dir.z < 0.0) {
-        double t = -0.0 / dir.z;
-        point.x = dir.x * t;
-        point.y = dir.y * t;
-        point.z = 0.0;
-        point.intensity = 0.5f;
-    }
-    if (intersectMesh(dir, hit)) {
+    if (dir.z < 0.0 && false) {
+    double t = (0.0 - origin.y) / dir.z;
+	if (t > 0) {
+	    point.x = origin.x + dir.x * t;
+	    point.y = origin.y + dir.y * t;
+	    point.z = origin.z;
+	    point.intensity = 0.3f;
+	}
+   } else if (intersectMesh(origin, dir, hit)) {
         point.x = hit.x;
         point.y = hit.y;
         point.z = hit.z;
@@ -112,28 +160,42 @@ EmulationProducer::generatePoint(double angle_horizontal,
 }
 
 
-bool EmulationProducer::intersectMesh(const Vec3& ray_dir,
+bool EmulationProducer::intersectMesh(const Vec3& origin, const Vec3& ray_dir,
                                       Vec3& hit_point)
 {
-    const Vec3 origin{5, 2, 0};
 
     double closest_t = std::numeric_limits<double>::max();
     bool hit = false;
 
-    for (const auto& tri : triangles_) {
-        double t;
-        if (intersectTriangle(origin, ray_dir, tri, t)) {
-            if (t < closest_t) {
-                closest_t = t;
-                hit = true;
+    std::function<void(int)> traverse = [&](int nodeIndex)
+    {
+        const BVHNode& node = bvh_[nodeIndex];
+
+        if (!intersectAABB(origin, ray_dir, node.box))
+            return;
+
+        if (node.left == -1 && node.right == -1) {
+            for (int idx : node.triangle_indices) {
+                double t;
+                if (intersectTriangle(origin, ray_dir, triangles_[idx], t)) {
+                    if (t < closest_t) {
+                        closest_t = t;
+                        hit = true;
+                    }
+                }
             }
+        } else {
+            if (node.left >= 0) traverse(node.left);
+            if (node.right >= 0) traverse(node.right);
         }
-    }
+    };
+
+    traverse(0);
 
     if (hit) {
-        hit_point.x = ray_dir.x * closest_t;
-        hit_point.y = ray_dir.y * closest_t;
-        hit_point.z = ray_dir.z * closest_t;
+        hit_point.x = origin.x + ray_dir.x * closest_t;
+        hit_point.y = origin.y + ray_dir.y * closest_t;
+        hit_point.z = origin.z + ray_dir.z * closest_t;
     }
 
     return hit;
@@ -195,8 +257,8 @@ EmulationProducer::~EmulationProducer() {
 
 void EmulationProducer::produce()
 {
-    const double vertical_min_deg = -90.0;
-    const double vertical_max_deg =  90.0;
+    const double vertical_min_deg = -45.0;
+    const double vertical_max_deg =  45.0;
 
     while (running_)
     {
@@ -253,3 +315,86 @@ void EmulationProducer::produce()
     }
 }
 
+EmulationProducer::AABB EmulationProducer::computeAABB(const std::vector<int>& indices)
+{
+    AABB box;
+    box.min = {1e9,1e9,1e9};
+    box.max = {-1e9,-1e9,-1e9};
+
+    for (int idx : indices) {
+        const auto& t = triangles_[idx];
+        for (const Vec3* v : {&t.v0,&t.v1,&t.v2}) {
+            box.min.x = std::min(box.min.x, v->x);
+            box.min.y = std::min(box.min.y, v->y);
+            box.min.z = std::min(box.min.z, v->z);
+            box.max.x = std::max(box.max.x, v->x);
+            box.max.y = std::max(box.max.y, v->y);
+            box.max.z = std::max(box.max.z, v->z);
+        }
+    }
+    return box;
+}
+
+int EmulationProducer::buildBVHRecursive(std::vector<int>& indices)
+{
+    BVHNode node;
+    node.box = computeAABB(indices);
+
+    if (indices.size() < 16) {
+        node.triangle_indices = indices;
+        bvh_.push_back(node);
+        return bvh_.size() - 1;
+    }
+
+    int axis = 0;
+    Vec3 size{
+        node.box.max.x - node.box.min.x,
+        node.box.max.y - node.box.min.y,
+        node.box.max.z - node.box.min.z
+    };
+
+    if (size.y > size.x) axis = 1;
+    if (size.z > size.y && size.z > size.x) axis = 2;
+
+    std::sort(indices.begin(), indices.end(), [&](int a, int b){
+        const auto& ta = triangles_[a];
+        const auto& tb = triangles_[b];
+        double ca = (&ta.v0.x)[axis];
+        double cb = (&tb.v0.x)[axis];
+        return ca < cb;
+    });
+
+    std::vector<int> left(indices.begin(), indices.begin() + indices.size()/2);
+    std::vector<int> right(indices.begin() + indices.size()/2, indices.end());
+
+    int index = bvh_.size();
+    bvh_.push_back(node);
+
+    bvh_[index].left = buildBVHRecursive(left);
+    bvh_[index].right = buildBVHRecursive(right);
+
+    return index;
+}
+
+void EmulationProducer::buildBVH()
+{
+    std::vector<int> indices(triangles_.size());
+    std::iota(indices.begin(), indices.end(), 0);
+    buildBVHRecursive(indices);
+}
+
+bool EmulationProducer::intersectAABB(const Vec3& orig, const Vec3& dir, const AABB& box)
+{
+    double tmin = (box.min.x - orig.x) / dir.x;
+    double tmax = (box.max.x - orig.x) / dir.x;
+    if (tmin > tmax) std::swap(tmin, tmax);
+
+    double tymin = (box.min.y - orig.y) / dir.y;
+    double tymax = (box.max.y - orig.y) / dir.y;
+    if (tymin > tymax) std::swap(tymin, tymax);
+
+    if ((tmin > tymax) || (tymin > tmax))
+        return false;
+
+    return true;
+}
