@@ -1,0 +1,47 @@
+services:
+  unilidar:
+    image: ghcr.io/cueltschey/parkme-uinlidar 
+
+    build:
+      context: lidar
+      dockerfile: Dockerfile
+
+    env_file:
+      - .env
+    networks:
+      pointcloud:
+        ipv4_address: 172.26.1.7
+    configs:
+      - unilidar.yml
+    command: parkme_unilidar -c /unilidar.yml
+
+  renderer:
+    image: ghcr.io/cueltschey/parkme-renderer
+
+    build:
+      context: renderer
+      dockerfile: Dockerfile
+
+    networks:
+      pointcloud:
+        ipv4_address: 172.26.1.8
+
+    env_file:
+      - .env
+
+
+
+configs:
+  unilidar.yml:
+    file: ${UNILIDAR_CONFIG:-configs/emulation.yaml}
+
+networks:
+  default:
+    driver: bridge
+
+  pointcloud:
+    name: parkme_pointcloud
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.26.1.0/24
