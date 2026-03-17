@@ -6,6 +6,9 @@ services:
       context: lidar
       dockerfile: Dockerfile
 
+    ports:
+      - 9002:9002
+
     env_file:
       - .env
     networks:
@@ -22,12 +25,16 @@ services:
       context: renderer
       dockerfile: Dockerfile
 
-    networks:
-      pointcloud:
-        ipv4_address: 172.26.1.8
+    ports:
+      - 8080:8080
 
     env_file:
       - .env
+    networks:
+      pointcloud:
+        ipv4_address: 172.26.1.8
+    command: python3 -m http.server 8080
+
 
 
 

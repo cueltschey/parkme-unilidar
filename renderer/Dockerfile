@@ -16,4 +16,4 @@ WORKDIR /app
 COPY . .
 
 #CMD ./venv/bin/python3 main.py --config /controller.yml
-CMD python3 -m http.server 8080
+#CMD python3 -m http.server 8080
