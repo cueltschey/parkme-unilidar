@@ -3,13 +3,14 @@
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
-#include <iostream>
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/search/kdtree.h>
 #include <pcl/segmentation/extract_clusters.h>
 
-using json = nlohmann::json;
+#include <cstdio>
+#include <iostream>
+
 namespace beast = boost::beast;
 namespace websocket = beast::websocket;
 namespace net = boost::asio;
@@ -34,14 +35,12 @@ Consumer::~Consumer() {
 void Consumer::run() {
     acceptConnections();
 
-    // Main streaming loop
     while (running_) {
         auto cloud = producer_->getCloud();
-        json j = cloudToJson(cloud);
+        std::string payload = cloudToJson(cloud);
+        broadcastCloud(payload);
 
-        broadcastCloud(j);
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // adjust for frame rate
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
 }
 
@@ -70,12 +69,13 @@ void Consumer::acceptConnections() {
     }).detach();
 }
 
-void Consumer::broadcastCloud(const json& j) {
+// Serialize once, write the same buffer to every client.
+void Consumer::broadcastCloud(const std::string& payload) {
     std::lock_guard<std::mutex> lock(clients_mutex_);
     auto it = clients_.begin();
     while (it != clients_.end()) {
         try {
-            (*it)->write(net::buffer(j.dump()));
+            (*it)->write(net::buffer(payload));
             ++it;
         } catch (const std::exception& e) {
             std::cerr << "WebSocket send error: " << e.what() << ", removing client" << std::endl;
@@ -84,67 +84,75 @@ void Consumer::broadcastCloud(const json& j) {
     }
 }
 
-json Consumer::cloudToJson(const unilidar_sdk2::PointCloudUnitree& cloud) {
-    json j;
-    j["stamp"] = cloud.stamp;
-    j["id"] = cloud.id;
-    j["ringNum"] = cloud.ringNum;
-
-    pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl_cloud->points.reserve(cloud.points.size());
-
+std::string Consumer::cloudToJson(const unilidar_sdk2::PointCloudUnitree& cloud) {
+    // --- 1. Collect hit points only (intensity > 0 means the ray struck a mesh).
+    //        Zero-intensity miss points are skipped entirely so PCL and the JSON
+    //        serializer never touch the bulk of the 800 K rays that hit nothing.
+    std::vector<const unilidar_sdk2::PointUnitree*> hits;
+    hits.reserve(cloud.points.size());
     for (const auto& p : cloud.points) {
-        pcl_cloud->points.emplace_back(p.x, p.y, p.z);
+        if (p.intensity > 0.0f)
+            hits.push_back(&p);
     }
 
-    pcl_cloud->width = pcl_cloud->points.size();
-    pcl_cloud->height = 1;
-    pcl_cloud->is_dense = true;
+    // --- 2. PCL Euclidean clustering on the (small) hit set.
+    std::vector<int> point_cluster_ids(hits.size(), -1);
 
-    pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
-    tree->setInputCloud(pcl_cloud);
+    if (!hits.empty()) {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
+        pcl_cloud->points.reserve(hits.size());
+        for (const auto* p : hits)
+            pcl_cloud->points.emplace_back(p->x, p->y, p->z);
+        pcl_cloud->width  = pcl_cloud->points.size();
+        pcl_cloud->height = 1;
+        pcl_cloud->is_dense = true;
 
-    std::vector<pcl::PointIndices> cluster_indices;
+        pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
+        tree->setInputCloud(pcl_cloud);
 
-    pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-    ec.setClusterTolerance(0.4);
-    ec.setMinClusterSize(10);
-    ec.setMaxClusterSize(25000);
-    ec.setSearchMethod(tree);
-    ec.setInputCloud(pcl_cloud);
-    ec.extract(cluster_indices);
+        std::vector<pcl::PointIndices> cluster_indices;
+        pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+        ec.setClusterTolerance(0.4);
+        ec.setMinClusterSize(10);
+        ec.setMaxClusterSize(25000);
+        ec.setSearchMethod(tree);
+        ec.setInputCloud(pcl_cloud);
+        ec.extract(cluster_indices);
 
-    // -----------------------------
-    // Map each point to a cluster ID
-    // -----------------------------
-    std::vector<int> point_cluster_ids(pcl_cloud->points.size(), -1);
-
-    int cluster_id = 0;
-    for (const auto& indices : cluster_indices) {
-        for (int idx : indices.indices) {
-            point_cluster_ids[idx] = cluster_id;
+        int cluster_id = 0;
+        for (const auto& indices : cluster_indices) {
+            for (int idx : indices.indices)
+                point_cluster_ids[idx] = cluster_id;
+            ++cluster_id;
         }
-        cluster_id++;
     }
 
-    // -----------------------------
-    // Build JSON output
-    // -----------------------------
-    j["points"] = json::array();
+    // --- 3. Build the JSON string directly with snprintf.
+    //        Avoids the two-pass cost of building an nlohmann DOM tree and then
+    //        calling dump() — each push_back on a large JSON array allocates heap
+    //        nodes; snprintf into a pre-reserved string is a single linear pass.
+    std::string out;
+    out.reserve(128 + hits.size() * 80);
 
-    for (size_t i = 0; i < cloud.points.size(); ++i) {
-        const auto& p = cloud.points[i];
+    char hdr[128];
+    std::snprintf(hdr, sizeof(hdr),
+                  "{\"stamp\":%.6f,\"id\":%u,\"ringNum\":%u,\"points\":[",
+                  cloud.stamp, cloud.id, cloud.ringNum);
+    out += hdr;
 
-        j["points"].push_back({
-            {"x", p.x},
-            {"y", p.y},
-            {"z", p.z},
-            {"intensity", p.intensity},
-            {"ring", p.ring},
-            {"time", p.time},
-            {"cluster_id", point_cluster_ids[i]}   // <-- NEW FIELD
-        });
+    char buf[128];
+    for (size_t i = 0; i < hits.size(); ++i) {
+        if (i > 0) out += ',';
+        const auto* p = hits[i];
+        std::snprintf(buf, sizeof(buf),
+                      "{\"x\":%.4f,\"y\":%.4f,\"z\":%.4f,"
+                      "\"intensity\":%.2f,\"ring\":%u,\"time\":%.4f,"
+                      "\"cluster_id\":%d}",
+                      p->x, p->y, p->z,
+                      p->intensity, (unsigned)p->ring, p->time,
+                      point_cluster_ids[i]);
+        out += buf;
     }
-
-    return j;
+    out += "]}";
+    return out;
 }

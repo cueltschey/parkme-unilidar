@@ -14,6 +14,9 @@ typedef struct parkme_cfg_s {
     std::string udp_ip;
     uint16_t udp_port = 0;
     std::string obj_file;
+    float lidar_x = 0.0f;
+    float lidar_y = 0.0f;
+    float lidar_z = 1.0f; // default 1 m above ground
 } parkme_cfg_t;
 
 parkme_cfg_t parse_config(const std::string& config_file) {
@@ -46,6 +49,12 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.cloud_generation_interval = emu["cloud_generation_interval"].as<double>();
         if (emu["obj_file"])
             config.obj_file = emu["obj_file"].as<std::string>();
+        if (emu["lidar_x"])
+            config.lidar_x = emu["lidar_x"].as<float>();
+        if (emu["lidar_y"])
+            config.lidar_y = emu["lidar_y"].as<float>();
+        if (emu["lidar_z"])
+            config.lidar_z = emu["lidar_z"].as<float>();
     }
     else if (node["testbed"]) {
         YAML::Node tb = node["testbed"];

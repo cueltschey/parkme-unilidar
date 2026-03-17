@@ -44,17 +44,6 @@ add_executable(parkme_unilidar
 
 find_package(yaml-cpp REQUIRED)
 
-include(FetchContent)
-
-FetchContent_Declare(
-    nlohmann_json
-    GIT_REPOSITORY https://github.com/nlohmann/json.git
-    GIT_TAG v3.11.3
-)
-
-FetchContent_MakeAvailable(nlohmann_json)
-
-
 # === boost ===
 set(Boost_NO_BOOST_CMAKE ON)
 find_package(Boost REQUIRED COMPONENTS filesystem thread regex)
@@ -74,7 +63,6 @@ target_link_libraries(parkme_unilidar
     PRIVATE
     libunilidar_sdk2.a
     yaml-cpp
-    nlohmann_json::nlohmann_json
     Boost::thread
     Boost::regex
     ${PCL_LIBRARIES}
