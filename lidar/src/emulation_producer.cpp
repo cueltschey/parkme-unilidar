@@ -15,9 +15,13 @@ EmulationProducer::EmulationProducer(uint32_t /*num_rings*/,
                                      uint32_t /*points_per_ring*/,
                                      float lidar_x,
                                      float lidar_y,
-                                     float lidar_z)
+                                     float lidar_z,
+                                     double scene_duration)
     : sequence_id_(0),
       lidar_x_(lidar_x), lidar_y_(lidar_y), lidar_z_(lidar_z),
+      scene_duration_(scene_duration),
+      last_scene_change_(std::chrono::steady_clock::now()),
+      rng_(std::random_device{}()),
       scene_(std::make_unique<EmulationScene>())
 {
     initScene();
@@ -48,60 +52,71 @@ void EmulationProducer::initScene() {
         lidar_x_, lidar_y_, lidar_z_, 0.0f, 0.0f, 0.0f, "XYZ");
     LOG_INFO("LiDAR position: (%.2f, %.2f, %.2f)", lidar_x_, lidar_y_, lidar_z_);
 
-    struct Placement { const char* path; float x, y, z, yaw; };
+    randomizeScene();
+}
 
-    // Four hatchback cars. Scale 0.0254 converts the OBJ from inches → metres;
-    // no pitch correction needed — the mesh is already Z-up in its own frame.
-    Placement cars[] = {
-        {"meshes/hatchback.obj",  5.0f,  0.0f,  0.0f,  0.0f},
-        {"meshes/hatchback.obj", -5.0f,  0.0f,  0.0f,  (float)( M_PI)},
-        {"meshes/hatchback.obj",  0.0f,  5.0f,  0.0f,  (float)( M_PI / 2.0)},
-        {"meshes/hatchback.obj",  0.0f, -5.0f,  0.0f,  (float)(-M_PI / 2.0)},
-    };
-    for (auto& p : cars) {
+void EmulationProducer::randomizeScene() {
+    // Clear existing objects before rebuilding.
+    scene_free(&scene_->scn);
+    scene_init(&scene_->scn);
+
+    // Random car count: 2–8.
+    std::uniform_int_distribution<int> count_dist(2, 8);
+    int num_cars = count_dist(rng_);
+
+    // Cars are placed within a 12 m radius; minimum 4 m separation between centres.
+    const float MAX_RADIUS = 12.0f;
+    const float MIN_SEP    =  4.0f;
+    // Yaw snapped to cardinal directions.
+    const float yaws[] = { 0.0f, (float)(M_PI / 2.0), (float)(M_PI), (float)(3.0 * M_PI / 2.0) };
+
+    std::uniform_real_distribution<float> angle_dist(0.0f, (float)(2.0 * M_PI));
+    std::uniform_real_distribution<float> radius_dist(3.0f, MAX_RADIUS);
+    std::uniform_int_distribution<int>    yaw_dist(0, 3);
+
+    struct CarPos { float x, y; };
+    std::vector<CarPos> placed;
+    placed.reserve(num_cars);
+
+    int attempts = 0;
+    while ((int)placed.size() < num_cars && attempts < 200) {
+        ++attempts;
+        float angle = angle_dist(rng_);
+        float r     = radius_dist(rng_);
+        float cx = r * std::cos(angle);
+        float cy = r * std::sin(angle);
+
+        // Reject if too close to any already-placed car.
+        bool ok = true;
+        for (const auto& p : placed) {
+            float dx = cx - p.x, dy = cy - p.y;
+            if (std::sqrt(dx*dx + dy*dy) < MIN_SEP) { ok = false; break; }
+        }
+        if (!ok) continue;
+
+        float yaw = yaws[yaw_dist(rng_)];
         scene_object obj;
-        if (create_mesh_from_file(p.path, &obj, 0.0254f, 0.0254f, 0.0254f)) {
-            obj.transform = create_transformation_matrix(
-                p.x, p.y, p.z, 0.0f, 0.0f, p.yaw, "XYZ");
+        if (create_mesh_from_file("meshes/hatchback.obj", &obj, 0.0254f, 0.0254f, 0.0254f)) {
+            obj.transform = create_transformation_matrix(cx, cy, 0.0f, 0.0f, 0.0f, yaw, "XYZ");
             scene_add_object(&scene_->scn, obj);
+            placed.push_back({cx, cy});
         } else {
-            LOG_WARNING("Failed to load mesh: %s", p.path);
+            LOG_WARNING("Failed to load mesh: meshes/hatchback.obj");
+            break; // no point retrying if the file is missing
         }
     }
+    LOG_INFO("Randomized scene: %d cars placed", (int)placed.size());
 
-    // Three trees — no pitch correction needed (trees are upright in OBJ).
-    Placement trees[] = {
-        //{"meshes/tree.obj",  2.0f,  5.0f, 0.0f, 0.0f},
-        //{"meshes/tree.obj", -3.0f, -4.0f, 0.0f, 0.0f},
-        //{"meshes/tree.obj",  6.0f,  0.0f, 0.0f, 0.0f},
-    };
-    for (auto& p : trees) {
-        scene_object obj;
-        if (create_mesh_from_file(p.path, &obj, 1.0f, 1.0f, 1.0f)) {
-            obj.transform = create_transformation_matrix(
-                p.x, p.y, p.z, 0.0f, 0.0f, p.yaw, "ZY");
-            scene_add_object(&scene_->scn, obj);
-        } else {
-            LOG_WARNING("Failed to load mesh: %s", p.path);
-        }
-    }
-
-    // Ground plane centred at the origin — large enough to undercut all cars.
-    // Rays that pass below the car body (no undercarriage geometry in the mesh)
-    // hit this surface instead of returning empty, completing the silhouette.
+    // Ground plane — always present so wheel-well gaps are filled.
     scene_object ground = create_plane(40.0f, 40.0f);
     ground.transform = create_transformation_matrix(0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, "XYZ");
     scene_add_object(&scene_->scn, ground);
 
-    // Separate plane at (50, 50) — flat in the XY plane, 20 × 20 units.
-    scene_object plane = create_plane(20.0f, 20.0f);
-    plane.transform = create_transformation_matrix(50.0f, 50.0f, 0.0f, 0.0f, 0.0f, 0.0f, "XYZ");
-    scene_add_object(&scene_->scn, plane);
-
-    // Apply lidar-relative transforms and build the top-level BVH.
+    // Apply lidar-relative transforms and rebuild the top-level BVH.
     scene_update(&scene_->scn, scene_->ldr);
     scene_build(&scene_->scn);
 
+    last_scene_change_ = std::chrono::steady_clock::now();
     LOG_INFO("EmulationScene ready: %d objects loaded", scene_->scn.current_size);
 }
 
@@ -109,6 +124,13 @@ void EmulationProducer::produce()
 {
     while (running_)
     {
+        // Periodically randomize the scene.
+        auto now = std::chrono::steady_clock::now();
+        double elapsed = std::chrono::duration<double>(now - last_scene_change_).count();
+        if (elapsed >= scene_duration_) {
+            randomizeScene();
+        }
+
         unilidar_sdk2::PointCloudUnitree cloud;
 
         cloud.stamp = std::chrono::duration<double>(

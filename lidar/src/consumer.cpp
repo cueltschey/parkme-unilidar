@@ -99,31 +99,49 @@ std::string Consumer::cloudToJson(const unilidar_sdk2::PointCloudUnitree& cloud)
     std::vector<int> point_cluster_ids(hits.size(), -1);
 
     if (!hits.empty()) {
+        // Build a filtered PCL cloud excluding near-ground hits.
+        // The lidar sits at z ≈ +1 m in world space, so in lidar-relative coords
+        // the ground plane is at z ≈ -1.0 m and car bodies start at z ≈ -0.87 m.
+        // Points within the ground band (z < -0.9) are within PCL's 0.4 m
+        // tolerance of wheel-level car points, causing them to merge into one
+        // giant cluster.  Filtering them out before clustering isolates each car.
+        //
+        // pcl_to_hits[i] maps PCL cloud index → original hits[] index so that
+        // cluster assignments can be written back correctly.
+        std::vector<int> pcl_to_hits;
+        pcl_to_hits.reserve(hits.size());
+
         pcl::PointCloud<pcl::PointXYZ>::Ptr pcl_cloud(new pcl::PointCloud<pcl::PointXYZ>);
         pcl_cloud->points.reserve(hits.size());
-        for (const auto* p : hits)
-            pcl_cloud->points.emplace_back(p->x, p->y, p->z);
+        for (int i = 0; i < (int)hits.size(); ++i) {
+            if (hits[i]->z > -0.9f) {
+                pcl_cloud->points.emplace_back(hits[i]->x, hits[i]->y, hits[i]->z);
+                pcl_to_hits.push_back(i);
+            }
+        }
         pcl_cloud->width  = pcl_cloud->points.size();
         pcl_cloud->height = 1;
         pcl_cloud->is_dense = true;
 
-        pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
-        tree->setInputCloud(pcl_cloud);
+        if (!pcl_cloud->points.empty()) {
+            pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>);
+            tree->setInputCloud(pcl_cloud);
 
-        std::vector<pcl::PointIndices> cluster_indices;
-        pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
-        ec.setClusterTolerance(0.4);
-        ec.setMinClusterSize(10);
-        ec.setMaxClusterSize(25000);
-        ec.setSearchMethod(tree);
-        ec.setInputCloud(pcl_cloud);
-        ec.extract(cluster_indices);
+            std::vector<pcl::PointIndices> cluster_indices;
+            pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
+            ec.setClusterTolerance(0.4);
+            ec.setMinClusterSize(10);
+            ec.setMaxClusterSize(25000);
+            ec.setSearchMethod(tree);
+            ec.setInputCloud(pcl_cloud);
+            ec.extract(cluster_indices);
 
-        int cluster_id = 0;
-        for (const auto& indices : cluster_indices) {
-            for (int idx : indices.indices)
-                point_cluster_ids[idx] = cluster_id;
-            ++cluster_id;
+            int cluster_id = 0;
+            for (const auto& indices : cluster_indices) {
+                for (int idx : indices.indices)
+                    point_cluster_ids[pcl_to_hits[idx]] = cluster_id;
+                ++cluster_id;
+            }
         }
     }
 

@@ -1,10 +1,8 @@
-# Parkme UniLiDAR producer
+# Parkme UniLiDAR system
 
-This program collects, processes and transmits simulated or real point cloud data using the UniLiDAR SDK.
+This program collects, processes and transmits simulated or real point cloud data using the UniLiDAR SDK. It then renders and classifies this data using an AI model.
 
-It can be configured to use either a ray tracing simulation, or a real LiDAR communicating over UDP.
-
-The data is sent to a configured destination over WebSockets.
+![./images/complete\_render.png](./images/complete\_render.png)
 
 ## Dependencies
 
@@ -26,13 +24,12 @@ The data is sent to a configured destination over WebSockets.
 
 To build with Docker:
 ```bash
-docker build ./lidar -f Dockerfile -t ghcr.io/cueltschey/parkme-unilidar
-docker build ./renderer -f Dockerfile -t ghcr.io/cueltschey/parkme-renderer
+docker compose build
 ```
 
 To run the full stack:
 ```bash
-docker-compose up
+docker compose up
 ```
 
 To build the lidar component bare-metal:

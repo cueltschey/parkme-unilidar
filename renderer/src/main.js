@@ -1,11 +1,12 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js'
 import GUI from 'lil-gui'
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-// Falls back gracefully when accessed from a remote host (e.g. Docker).
-const WS_URL = `ws://${location.hostname}:9002`
+const WS_URL             = `ws://${location.hostname}:9002`
+const CLASSIFIER_WS_URL  = `ws://${location.hostname}:9003`
 
 // Upper bound on points held in the GPU buffer at once.
 // Each point costs 6 floats (3 pos + 3 color) = 24 bytes → 200 K pts ≈ 4.8 MB.
@@ -30,10 +31,21 @@ const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 5
 camera.up.set(0, 0, 1)            // Z-up to match LiDAR coordinate frame
 camera.position.set(0, -18, 14)   // Isometric-ish bird's-eye starting view
 
+// ─── WebGL renderer ───────────────────────────────────────────────────────────
+
 const renderer = new THREE.WebGLRenderer({ antialias: true })
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2))
 renderer.setSize(innerWidth, innerHeight)
 document.body.appendChild(renderer.domElement)
+
+// ─── CSS2D renderer (used for text labels) ────────────────────────────────────
+
+const labelRenderer = new CSS2DRenderer()
+labelRenderer.setSize(innerWidth, innerHeight)
+labelRenderer.domElement.style.position = 'absolute'
+labelRenderer.domElement.style.top      = '0px'
+labelRenderer.domElement.style.pointerEvents = 'none'
+document.body.appendChild(labelRenderer.domElement)
 
 const controls = new OrbitControls(camera, renderer.domElement)
 controls.enableDamping = true
@@ -49,8 +61,7 @@ const geometry  = new THREE.BufferGeometry()
 const posAttr   = new THREE.BufferAttribute(positions, 3)
 const colAttr   = new THREE.BufferAttribute(colors, 3)
 
-// DynamicDrawUsage hints to WebGL that these buffers will be updated often,
-// allowing the driver to place them in faster memory.
+// DynamicDrawUsage hints to WebGL that these buffers will be updated often.
 posAttr.setUsage(THREE.DynamicDrawUsage)
 colAttr.setUsage(THREE.DynamicDrawUsage)
 
@@ -59,9 +70,11 @@ geometry.setAttribute('color',    colAttr)
 geometry.setDrawRange(0, 0)
 
 const params = {
-  pointSize:  0.08,
-  colorMode:  'cluster',   // 'cluster' | 'height' | 'intensity'
-  maxFrames:  1,           // how many consecutive clouds to overlay
+  pointSize:    0.08,
+  colorMode:    'cluster',   // 'cluster' | 'height' | 'intensity'
+  maxFrames:    1,
+  showBoxes:    true,
+  showLabels:   true,
 }
 
 const cloudMaterial = new THREE.PointsMaterial({
@@ -70,12 +83,6 @@ const cloudMaterial = new THREE.PointsMaterial({
   sizeAttenuation: true,
 })
 scene.add(new THREE.Points(geometry, cloudMaterial))
-
-// ─── Frame queue ─────────────────────────────────────────────────────────────
-// Each entry is { pos, clusterIds, intensities, count } — typed arrays
-// transferred from the worker (no copy overhead).
-
-const frames = []
 
 // ─── GUI ─────────────────────────────────────────────────────────────────────
 
@@ -91,38 +98,151 @@ gui.add(params, 'colorMode', ['cluster', 'height', 'intensity'])
 gui.add(params, 'maxFrames', 1, 30, 1)
    .name('Frames to keep')
 
+gui.add(params, 'showBoxes')
+   .name('Bounding boxes')
+   .onChange(v => { clusterObjects.forEach(o => { o.box.visible = v }) })
+
+gui.add(params, 'showLabels')
+   .name('Labels')
+   .onChange(v => { clusterObjects.forEach(o => { o.labelObj.visible = v }) })
+
+// ─── Frame queue ─────────────────────────────────────────────────────────────
+
+const frames = []
+
+// ─── Classification overlay ──────────────────────────────────────────────────
+// Maps cluster_id → { box: THREE.LineSegments, labelObj: CSS2DObject }
+
+const clusterObjects = new Map()
+
+// Wireframe box material per label type
+const LABEL_COLORS = {
+  car:        0x00bfff,
+  truck:      0xff8c00,
+  pedestrian: 0x7fff00,
+  ground:     0x888888,
+  unknown:    0xffffff,
+}
+
+function labelColor(label) {
+  return LABEL_COLORS[label] ?? LABEL_COLORS.unknown
+}
+
+// Create or update the 3D box + CSS label for a single classification entry.
+function upsertCluster(c) {
+  const [dx, dy, dz] = c.bbox
+  const [cx, cy, cz] = c.centroid
+
+  if (clusterObjects.has(c.cluster_id)) {
+    const { box, labelObj, labelDiv } = clusterObjects.get(c.cluster_id)
+
+    // Reuse existing objects — update geometry and position in-place.
+    box.geometry.dispose()
+    box.geometry = new THREE.EdgesGeometry(new THREE.BoxGeometry(dx, dy, dz))
+    box.material.color.setHex(labelColor(c.label))
+    box.position.set(cx, cy, cz)
+    box.visible = params.showBoxes
+
+    labelObj.position.set(0, 0, dz / 2 + 0.4)
+    labelDiv.textContent = `${c.label} ${(c.confidence * 100).toFixed(0)}%`
+    labelDiv.className   = `cluster-label label-${c.label}`
+    labelObj.visible     = params.showLabels
+
+  } else {
+    // Build box wireframe
+    const boxGeom = new THREE.EdgesGeometry(new THREE.BoxGeometry(dx, dy, dz))
+    const boxMat  = new THREE.LineBasicMaterial({ color: labelColor(c.label) })
+    const box     = new THREE.LineSegments(boxGeom, boxMat)
+    box.position.set(cx, cy, cz)
+    box.visible = params.showBoxes
+
+    // Build CSS2D label — child of the box so it moves with it
+    const div = document.createElement('div')
+    div.textContent = `${c.label} ${(c.confidence * 100).toFixed(0)}%`
+    div.className   = `cluster-label label-${c.label}`
+
+    const labelObj = new CSS2DObject(div)
+    // Offset upward by half the box height + a small margin
+    labelObj.position.set(0, 0, dz / 2 + 0.4)
+    labelObj.visible = params.showLabels
+    box.add(labelObj)
+
+    scene.add(box)
+    clusterObjects.set(c.cluster_id, { box, labelObj, labelDiv: div })
+  }
+}
+
+function applyClassifications(classifications) {
+  const activeIds = new Set(classifications.map(c => c.cluster_id))
+
+  // Remove boxes + labels for clusters no longer present.
+  // labelDiv.remove() is required: CSS2DRenderer creates DOM elements and does
+  // not remove them when the parent Object3D is removed from the scene graph.
+  for (const [id, { box, labelDiv }] of clusterObjects) {
+    if (!activeIds.has(id)) {
+      box.geometry.dispose()
+      box.material.dispose()
+      scene.remove(box)
+      labelDiv.remove()
+      clusterObjects.delete(id)
+    }
+  }
+
+  // Create or update each active cluster
+  for (const c of classifications) {
+    upsertCluster(c)
+  }
+}
+
 // ─── Worker setup ────────────────────────────────────────────────────────────
 
 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' })
-worker.postMessage({ type: 'init', wsUrl: WS_URL })
+worker.postMessage({ type: 'init', wsUrl: WS_URL, classifierUrl: CLASSIFIER_WS_URL })
 
-const connLabel = document.getElementById('conn-label')
-const infoLabel = document.getElementById('info-label')
-const fpsDiv    = document.getElementById('fps-counter')
+const connLabel       = document.getElementById('conn-label')
+const classifierLabel = document.getElementById('classifier-label')
+const infoLabel       = document.getElementById('info-label')
+const fpsDiv          = document.getElementById('fps-counter')
 
 let lastFrameId = -1
 
 worker.onmessage = ({ data: msg }) => {
-  if (msg.type === 'status') {
-    if (msg.connected) {
-      connLabel.textContent = '⬤ Connected'
-      connLabel.className   = 'connected'
-    } else {
-      connLabel.textContent = '⬤ Disconnected'
-      connLabel.className   = 'disconnected'
-    }
-  } else if (msg.type === 'cloud') {
-    frames.push({ pos: msg.pos, clusterIds: msg.clusterIds,
-                  intensities: msg.intensities, count: msg.count })
-    // Evict oldest frames beyond the configured limit
-    while (frames.length > params.maxFrames) frames.shift()
-    lastFrameId = msg.id
+  switch (msg.type) {
+    case 'status':
+      if (msg.connected) {
+        connLabel.textContent = '⬤ Lidar'
+        connLabel.className   = 'connected'
+      } else {
+        connLabel.textContent = '⬤ Lidar'
+        connLabel.className   = 'disconnected'
+      }
+      break
+
+    case 'classifierStatus':
+      if (msg.connected) {
+        classifierLabel.textContent = '⬤ Classifier'
+        classifierLabel.className   = 'connected'
+      } else {
+        classifierLabel.textContent = '⬤ Classifier'
+        classifierLabel.className   = 'disconnected'
+      }
+      break
+
+    case 'cloud':
+      frames.push({ pos: msg.pos, clusterIds: msg.clusterIds,
+                    intensities: msg.intensities, count: msg.count })
+      while (frames.length > params.maxFrames) frames.shift()
+      lastFrameId = msg.id
+      break
+
+    case 'classifications':
+      applyClassifications(msg.data.classifications ?? [])
+      break
   }
 }
 
 // ─── Color helpers ───────────────────────────────────────────────────────────
 
-// Reusable scratch array — avoids allocating [r,g,b] arrays in hot path
 const _rgb = new Float32Array(3)
 
 function hslToRgb(h, s, l, out) {
@@ -139,7 +259,6 @@ function hslToRgb(h, s, l, out) {
   out[0] = r + m; out[1] = g + m; out[2] = b + m
 }
 
-// Golden-angle hue hash — produces visually distinct colors for any cluster ID.
 function clusterColor(id, out) {
   if (id < 0) { out[0] = out[1] = out[2] = 0.35; return }
   hslToRgb(((id * 137.508) % 360) / 360, 0.85, 0.55, out)
@@ -150,7 +269,6 @@ function clusterColor(id, out) {
 function buildGeometry() {
   if (frames.length === 0) { geometry.setDrawRange(0, 0); return }
 
-  // Compute Z range for height colormap in a single pass over active frames
   let zMin = Infinity, zMax = -Infinity
   if (params.colorMode === 'height') {
     for (const f of frames) {
@@ -177,10 +295,8 @@ function buildGeometry() {
       if (params.colorMode === 'cluster') {
         clusterColor(f.clusterIds[i], _rgb)
       } else if (params.colorMode === 'height') {
-        // Blue (cold) → red (warm) gradient across observed Z range
         hslToRgb((1 - (f.pos[3 * i + 2] - zMin) / (zMax - zMin)) * 0.67, 1.0, 0.5, _rgb)
       } else {
-        // Intensity: white when intensity = 1, black when 0
         const v = f.intensities[i]
         _rgb[0] = _rgb[1] = _rgb[2] = v
       }
@@ -223,12 +339,14 @@ function animate() {
 
   controls.update()
   renderer.render(scene, camera)
+  labelRenderer.render(scene, camera)
 }
 
 window.addEventListener('resize', () => {
   camera.aspect = innerWidth / innerHeight
   camera.updateProjectionMatrix()
   renderer.setSize(innerWidth, innerHeight)
+  labelRenderer.setSize(innerWidth, innerHeight)
 })
 
 animate()

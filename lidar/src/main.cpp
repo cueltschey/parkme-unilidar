@@ -52,7 +52,8 @@ int main(int argc, char* argv[]) {
         cfg.points_per_ring,
         cfg.lidar_x,
         cfg.lidar_y,
-        cfg.lidar_z
+        cfg.lidar_z,
+        cfg.scene_duration
     );
 
     // Consumer runs its own worker thread internally

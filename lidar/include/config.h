@@ -17,6 +17,7 @@ typedef struct parkme_cfg_s {
     float lidar_x = 0.0f;
     float lidar_y = 0.0f;
     float lidar_z = 1.0f; // default 1 m above ground
+    double scene_duration = 10.0; // seconds between scene randomizations
 } parkme_cfg_t;
 
 parkme_cfg_t parse_config(const std::string& config_file) {
@@ -55,6 +56,8 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.lidar_y = emu["lidar_y"].as<float>();
         if (emu["lidar_z"])
             config.lidar_z = emu["lidar_z"].as<float>();
+        if (emu["scene_duration"])
+            config.scene_duration = emu["scene_duration"].as<double>();
     }
     else if (node["testbed"]) {
         YAML::Node tb = node["testbed"];

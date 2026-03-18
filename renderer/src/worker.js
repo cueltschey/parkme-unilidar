@@ -1,16 +1,23 @@
 // WebSocket worker — runs entirely off the main thread.
-// Parses JSON, packs point data into typed arrays, and transfers
-// them (zero-copy) to the main thread via Transferable ArrayBuffers.
+// Manages two connections:
+//   1. lidar (port 9002) — point cloud frames
+//   2. classifier (port 9003) — cluster classification results
 
 let ws = null
+let classifierWs = null
 let wsUrl = null
+let classifierUrl = null
 
 self.onmessage = (e) => {
   if (e.data.type === 'init') {
-    wsUrl = e.data.wsUrl
+    wsUrl           = e.data.wsUrl
+    classifierUrl   = e.data.classifierUrl
     connect()
+    connectClassifier()
   }
 }
+
+// ─── Lidar point-cloud connection ────────────────────────────────────────────
 
 function connect() {
   try { ws = new WebSocket(wsUrl) }
@@ -34,8 +41,8 @@ function connect() {
 
     // Pack into typed arrays so we can transfer the underlying ArrayBuffers
     // to the main thread without copying.
-    const pos        = new Float32Array(n * 3)
-    const clusterIds = new Int32Array(n)
+    const pos         = new Float32Array(n * 3)
+    const clusterIds  = new Int32Array(n)
     const intensities = new Float32Array(n)
 
     for (let i = 0; i < n; i++) {
@@ -56,3 +63,26 @@ function connect() {
 }
 
 function retry() { setTimeout(connect, 3000) }
+
+// ─── Classifier connection ────────────────────────────────────────────────────
+
+function connectClassifier() {
+  try { classifierWs = new WebSocket(classifierUrl) }
+  catch (_) { retryClassifier(); return }
+
+  classifierWs.onopen  = () =>
+    self.postMessage({ type: 'classifierStatus', connected: true })
+  classifierWs.onerror = () => classifierWs.close()
+  classifierWs.onclose = () => {
+    self.postMessage({ type: 'classifierStatus', connected: false })
+    retryClassifier()
+  }
+
+  classifierWs.onmessage = (e) => {
+    let data
+    try { data = JSON.parse(e.data) } catch (_) { return }
+    self.postMessage({ type: 'classifications', data })
+  }
+}
+
+function retryClassifier() { setTimeout(connectClassifier, 3000) }

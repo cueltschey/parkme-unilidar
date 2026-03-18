@@ -18,6 +18,27 @@ services:
       - unilidar.yml
     command: parkme_unilidar -c /unilidar.yml
 
+  classifier:
+    image: ghcr.io/cueltschey/parkme-classifier
+
+    build:
+      context: classifier
+      dockerfile: Dockerfile
+
+    ports:
+      - 9003:9003
+
+    environment:
+      LIDAR_WS_URL: ws://unilidar:9002
+      CLASSIFIER_PORT: 9003
+
+    depends_on:
+      - unilidar
+
+    networks:
+      pointcloud:
+        ipv4_address: 172.26.1.9
+
   renderer:
     image: ghcr.io/cueltschey/parkme-renderer
 
@@ -33,7 +54,6 @@ services:
     networks:
       pointcloud:
         ipv4_address: 172.26.1.8
-    command: python3 -m http.server 8080
 
 
 

@@ -27,8 +27,8 @@
       color: #ddd;
       backdrop-filter: blur(4px);
     }
-    #conn-label.connected    { color: #4f4; }
-    #conn-label.disconnected { color: #f44; }
+    .connected    { color: #4f4; }
+    .disconnected { color: #f44; }
 
     #fps-counter {
       position: fixed;
@@ -39,11 +39,28 @@
       pointer-events: none;
       z-index: 10;
     }
+
+    /* ── Cluster labels (CSS2DRenderer) ── */
+    .cluster-label {
+      padding: 2px 7px;
+      border-radius: 3px;
+      font: bold 11px/1.4 monospace;
+      white-space: nowrap;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid currentColor;
+    }
+    .label-car        { color: #00bfff; }
+    .label-truck      { color: #ff8c00; }
+    .label-pedestrian { color: #7fff00; }
+    .label-ground     { color: #888; }
+    .label-unknown    { color: #fff; }
   </style>
 </head>
 <body>
   <div id="overlay">
-    <span class="badge"><span id="conn-label" class="disconnected">⬤ Disconnected</span></span>
+    <span class="badge"><span id="conn-label"       class="disconnected">⬤ Lidar</span></span>
+    <span class="badge"><span id="classifier-label" class="disconnected">⬤ Classifier</span></span>
     <span class="badge" id="info-label">&nbsp;</span>
   </div>
   <div id="fps-counter">-- fps</div>

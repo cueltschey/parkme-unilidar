@@ -7,3 +7,5 @@ emulation:
   lidar_x: 0.0
   lidar_y: 0.0
   lidar_z: 1.0
+  # scene_duration: 10.0
+  scene_duration: 0.5

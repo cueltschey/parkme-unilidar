@@ -64,6 +64,11 @@ emulation:
   lidar_y: 0.0
   lidar_z: 1.0
 
+  # Seconds between scene randomizations. Each interval the car count (2–8)
+  # and positions are re-randomized within a 12 m radius around the lidar,
+  # with a minimum 4 m separation between cars.
+  scene_duration: 10.0
+
   # Unused — ray pattern comes from csv/mid360.csv
   nof_rings: 132
   points_per_ring: 220
