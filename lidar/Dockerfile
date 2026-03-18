@@ -12,7 +12,8 @@ RUN apt-get update && apt-get upgrade -y && \
     pkg-config \
     libboost-all-dev \
     libpcl-dev \
-    libyaml-cpp-dev
+    libyaml-cpp-dev \
+    git
 
 RUN mkdir -p /app
 

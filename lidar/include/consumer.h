@@ -2,7 +2,6 @@
 #define CONSUMER_H
 
 #include "unitree_lidar_utilities.h"
-#include <nlohmann/json.hpp>
 
 #include <boost/asio.hpp>
 #include <boost/beast.hpp>
@@ -27,8 +26,8 @@ public:
 private:
     void run();
     void acceptConnections();
-    void broadcastCloud(const nlohmann::json& j);
-    nlohmann::json cloudToJson(
+    void broadcastCloud(const std::string& payload);
+    std::string cloudToJson(
         const unilidar_sdk2::PointCloudUnitree& cloud);
 
     std::shared_ptr<Producer> producer_;

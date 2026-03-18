@@ -4,4 +4,8 @@ emulation:
   websocket_port: 9002
   cloud_generation_interval: 0.05
   obj_file: "car.obj"
-
+  lidar_x: 0.0
+  lidar_y: 0.0
+  lidar_z: 1.0
+  # scene_duration: 10.0
+  scene_duration: 0.5

@@ -1,19 +1,14 @@
-FROM alpine:latest
-
-ENV PYTHONUNBUFFERED=1
-
-RUN apk add --no-cache \
-    python3 \
-    py3-pip \
-    py3-virtualenv
-
+# Stage 1 — build the Vite app
+FROM node:20-alpine AS build
 WORKDIR /app
-
-#COPY requirements.txt .
-#RUN python3 -m venv venv && \
-#    ./venv/bin/pip install --no-cache-dir -r requirements.txt
-
+COPY package*.json ./
+RUN npm ci
 COPY . .
+RUN npm run build
 
-#CMD ./venv/bin/python3 main.py --config /controller.yml
-CMD python3 -m http.server 8080
+# Stage 2 — serve with nginx on port 8080
+FROM nginx:alpine
+COPY --from=build /app/dist /usr/share/nginx/html
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 8080
+CMD ["nginx", "-g", "daemon off;"]

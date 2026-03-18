@@ -1,108 +1,69 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>LiDAR Point Cloud Viewer</title>
-    <style>
-        body { margin: 0; overflow: hidden; }
-        canvas { display: block; }
-    </style>
+  <meta charset="UTF-8" />
+  <title>LiDAR Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #0a0a0a; }
+    canvas { display: block; }
+
+    #overlay {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      pointer-events: none;
+      z-index: 10;
+      font: 12px/1.5 monospace;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 4px;
+      background: rgba(0, 0, 0, 0.65);
+      color: #ddd;
+      backdrop-filter: blur(4px);
+    }
+    .connected    { color: #4f4; }
+    .disconnected { color: #f44; }
+
+    #fps-counter {
+      position: fixed;
+      bottom: 8px;
+      right: 8px;
+      font: 11px monospace;
+      color: #888;
+      pointer-events: none;
+      z-index: 10;
+    }
+
+    /* ── Cluster labels (CSS2DRenderer) ── */
+    .cluster-label {
+      padding: 2px 7px;
+      border-radius: 3px;
+      font: bold 11px/1.4 monospace;
+      white-space: nowrap;
+      pointer-events: none;
+      background: rgba(0, 0, 0, 0.7);
+      border: 1px solid currentColor;
+    }
+    .label-car        { color: #00bfff; }
+    .label-truck      { color: #ff8c00; }
+    .label-pedestrian { color: #7fff00; }
+    .label-ground     { color: #888; }
+    .label-unknown    { color: #fff; }
+  </style>
 </head>
 <body>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.min.js"></script>
-    <script>
-        let scene, camera, renderer;
-        let points;
-
-        init();
-        animate();
-
-        function init() {
-            scene = new THREE.Scene();
-            scene.background = new THREE.Color(0x000000);
-
-            camera = new THREE.PerspectiveCamera(
-                75, 
-                window.innerWidth / window.innerHeight, 
-                0.1, 
-                1000
-            );
-            camera.position.set(0, -10, 5);
-            camera.lookAt(0, 0, 0);
-
-            renderer = new THREE.WebGLRenderer({ antialias: true });
-            renderer.setSize(window.innerWidth, window.innerHeight);
-            document.body.appendChild(renderer.domElement);
-
-            // Initial empty point cloud
-            const geometry = new THREE.BufferGeometry();
-            const material = new THREE.PointsMaterial({ size: 0.05, vertexColors: true });
-            points = new THREE.Points(geometry, material);
-            scene.add(points);
-
-            window.addEventListener('resize', onWindowResize, false);
-
-            connectWebSocket();
-        }
-
-        function onWindowResize() {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        }
-
-        function animate() {
-            requestAnimationFrame(animate);
-            renderer.render(scene, camera);
-        }
-
-        function connectWebSocket() {
-            const ws = new WebSocket("ws://localhost:9002"); // Replace with your URL
-
-            ws.onopen = () => {
-                console.log("WebSocket connected");
-            };
-
-            ws.onmessage = (event) => {
-                try {
-                    const cloud = JSON.parse(event.data);
-                    updatePointCloud(cloud);
-                } catch (e) {
-                    console.error("Error parsing cloud:", e);
-                }
-            };
-
-            ws.onclose = () => {
-                console.log("WebSocket closed, retrying in 3s...");
-                setTimeout(connectWebSocket, 3000);
-            };
-
-            ws.onerror = (err) => console.error("WebSocket error:", err);
-        }
-
-        function updatePointCloud(cloud) {
-            const numPoints = cloud.points.length;
-            const positions = new Float32Array(numPoints * 3);
-            const colors = new Float32Array(numPoints * 3);
-
-            for (let i = 0; i < numPoints; i++) {
-                const p = cloud.points[i];
-                positions[3*i] = p.x;
-                positions[3*i+1] = p.y;
-                positions[3*i+2] = p.z;
-
-                const intensity = p.intensity || 0.5;
-                colors[3*i] = intensity;
-                colors[3*i+1] = intensity;
-                colors[3*i+2] = intensity;
-            }
-
-            points.geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            points.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-            points.geometry.attributes.position.needsUpdate = true;
-            points.geometry.attributes.color.needsUpdate = true;
-        }
-    </script>
+  <div id="overlay">
+    <span class="badge"><span id="conn-label"       class="disconnected">⬤ Lidar</span></span>
+    <span class="badge"><span id="classifier-label" class="disconnected">⬤ Classifier</span></span>
+    <span class="badge" id="info-label">&nbsp;</span>
+  </div>
+  <div id="fps-counter">-- fps</div>
+  <script type="module" src="/src/main.js"></script>
 </body>
 </html>
-

@@ -35,8 +35,8 @@ int main(int argc, char* argv[]) {
                  cfg.points_per_ring,
                  cfg.cloud_generation_interval);
 
-        LOG_INFO("OBJ File: %s", cfg.obj_file.c_str());
         LOG_INFO("WebSocket Port: %d", cfg.websocket_port);
+        LOG_INFO("LiDAR offset: (%.2f, %.2f, %.2f)", cfg.lidar_x, cfg.lidar_y, cfg.lidar_z);
     } 
     else if (cfg.mode == "udp") {
         LOG_ERROR("UDP mode not implemented yet");
@@ -47,11 +47,13 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Create producer with OBJ mesh
     auto producer = std::make_shared<EmulationProducer>(
-        cfg.obj_file,
         cfg.nof_rings,
-        cfg.points_per_ring
+        cfg.points_per_ring,
+        cfg.lidar_x,
+        cfg.lidar_y,
+        cfg.lidar_z,
+        cfg.scene_duration
     );
 
     // Consumer runs its own worker thread internally
