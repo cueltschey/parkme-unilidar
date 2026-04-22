@@ -6,5 +6,15 @@ replay:
   roll_deg: -21.0
   min_radius: 4.0
   max_radius: 80.0
-  ground_clearance: 0.5
+  ground_clearance: 0.0
   send_period_sec: 0.2
+
+  # Ground removal (RANSAC plane fit + signed-height sweep)
+  ransac_distance_threshold: 0.10   # metres — tight fit keeps plane accurate
+  ransac_max_iterations: 100
+  ground_above_plane: 0.25          # metres above fitted plane still treated as ground
+
+  # Euclidean cluster extraction
+  cluster_tolerance: 0.40           # metres — max neighbour distance within a cluster
+  cluster_min_size: 10
+  cluster_max_size: 25000

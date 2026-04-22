@@ -31,12 +31,37 @@ typedef struct parkme_cfg_s {
     float max_radius = 80.0f;
     float ground_clearance = 0.0f;
     double send_period_sec = 0.2;
+    // ground removal (RANSAC)
+    float ransac_distance_threshold = 0.10f;
+    int   ransac_max_iterations     = 100;
+    float ground_above_plane        = 0.25f; // metres above fitted plane still considered ground
+    // Euclidean clustering
+    float cluster_tolerance         = 0.40f;
+    int   cluster_min_size          = 10;
+    int   cluster_max_size          = 25000;
 } parkme_cfg_t;
 
 parkme_cfg_t parse_config(const std::string& config_file) {
     parkme_cfg_t config;
 
     YAML::Node node = YAML::LoadFile(config_file);
+
+    // Helper: read the consumer-level knobs (ground removal + clustering) that
+    // are shared across all operating modes.  Called once per mode section.
+    auto parse_consumer_cfg = [&](const YAML::Node& n) {
+        if (n["ransac_distance_threshold"])
+            config.ransac_distance_threshold = n["ransac_distance_threshold"].as<float>();
+        if (n["ransac_max_iterations"])
+            config.ransac_max_iterations = n["ransac_max_iterations"].as<int>();
+        if (n["ground_above_plane"])
+            config.ground_above_plane = n["ground_above_plane"].as<float>();
+        if (n["cluster_tolerance"])
+            config.cluster_tolerance = n["cluster_tolerance"].as<float>();
+        if (n["cluster_min_size"])
+            config.cluster_min_size = n["cluster_min_size"].as<int>();
+        if (n["cluster_max_size"])
+            config.cluster_max_size = n["cluster_max_size"].as<int>();
+    };
 
     if(node["log_level"]){
 			std::string conf_log_level = node["log_level"].as<std::string>();
@@ -71,6 +96,7 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.lidar_z = emu["lidar_z"].as<float>();
         if (emu["scene_duration"])
             config.scene_duration = emu["scene_duration"].as<double>();
+        parse_consumer_cfg(emu);
     }
     else if (node["testbed"]) {
         YAML::Node tb = node["testbed"];
@@ -87,6 +113,7 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.local_ip = tb["local_ip"].as<std::string>();
         if (tb["local_port"])
             config.local_port = tb["local_port"].as<uint16_t>();
+        parse_consumer_cfg(tb);
     } else if (node["replay"]) {
         YAML::Node rp = node["replay"];
         config.mode = "replay";
@@ -108,6 +135,7 @@ parkme_cfg_t parse_config(const std::string& config_file) {
             config.ground_clearance = rp["ground_clearance"].as<float>();
         if (rp["send_period_sec"])
             config.send_period_sec = rp["send_period_sec"].as<double>();
+        parse_consumer_cfg(rp);
     } else {
         std::cerr << "Error: YAML must contain 'emulation', 'testbed', or 'replay' section." << std::endl;
         throw std::runtime_error("Invalid YAML configuration");

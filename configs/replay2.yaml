@@ -1,0 +1,10 @@
+replay:
+  npy_file: "/data/capture_001_pan83.0_tilt170.0.npy"
+  websocket_port: 9002
+  tilt_deg: -130.0
+  pan_deg: 0.0
+  roll_deg: -21.0
+  min_radius: 4.0
+  max_radius: 80.0
+  ground_clearance: 0.0
+  send_period_sec: 0.2

@@ -35,12 +35,18 @@ services:
       LIDAR_WS_URL: ws://unilidar:9002
       CLASSIFIER_PORT: 9003
 
+    env_file:
+      - .env
+
     depends_on:
       - unilidar
+      - influxdb
 
     networks:
       pointcloud:
         ipv4_address: 172.26.1.9
+      metrics:
+         ipv4_address: 172.19.1.7
 
   renderer:
     image: ghcr.io/cueltschey/parkme-renderer
@@ -58,12 +64,41 @@ services:
       pointcloud:
         ipv4_address: 172.26.1.8
 
+  influxdb:
+    container_name: influxdb
+    image: influxdb:${DOCKER_INFLUXDB_VERSION}
+    volumes:
+      - influxdb-storage:/var/lib/influxdb2:rw
+    env_file:
+      - .env
+    ports:
+      - 8086:${DOCKER_INFLUXDB_INIT_PORT}
+    networks:
+      metrics:
+        ipv4_address: 172.19.1.5
+
+  grafana:
+     image: ghcr.io/cueltschey/parkme-grafana
+     build:
+       context: grafana
+     volumes:
+       - grafana-storage:/var/lib/grafana:rw
+     env_file:
+       - .env
+     ports:
+       - 3300:${GRAFANA_PORT}
+     networks:
+       metrics:
+         ipv4_address: 172.19.1.6
+     depends_on:
+       - influxdb
+
 
 
 
 configs:
   unilidar.yml:
-    file: ${UNILIDAR_CONFIG:-configs/replay.yaml}
+    file: ${UNILIDAR_CONFIG:-configs/replay2.yaml}
 
 networks:
   default:
@@ -75,3 +110,13 @@ networks:
       driver: default
       config:
         - subnet: 172.26.1.0/24
+  metrics:
+    name: rt_metrics
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.19.1.0/24
+
+volumes:
+  influxdb-storage:
+  grafana-storage:

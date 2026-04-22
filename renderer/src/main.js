@@ -75,6 +75,10 @@ const params = {
   maxFrames:    1,
   showBoxes:    true,
   showLabels:   true,
+  rotX:         0,           // degrees — pitch (rotation around X axis)
+  rotY:         0,           // degrees — roll  (rotation around Y axis)
+  rotZ:         0,           // degrees — yaw   (rotation around Z axis)
+  groundLevel:  -10,         // metres — points below this (post-rotation) are hidden
 }
 
 const cloudMaterial = new THREE.PointsMaterial({
@@ -84,9 +88,15 @@ const cloudMaterial = new THREE.PointsMaterial({
 })
 scene.add(new THREE.Points(geometry, cloudMaterial))
 
+// Group that holds all classification boxes.  Rotating this group matches the
+// per-point rotation applied in buildGeometry() so boxes stay aligned with the
+// point cloud without needing to transform each centroid individually.
+const boxGroup = new THREE.Group()
+scene.add(boxGroup)
+
 // ─── GUI ─────────────────────────────────────────────────────────────────────
 
-const gui = new GUI({ title: 'LiDAR Viewer', width: 220 })
+const gui = new GUI({ title: 'LiDAR Viewer', width: 240 })
 
 gui.add(params, 'pointSize', 0.01, 0.5, 0.005)
    .name('Point size')
@@ -106,9 +116,21 @@ gui.add(params, 'showLabels')
    .name('Labels')
    .onChange(v => { clusterObjects.forEach(o => { o.labelObj.visible = v }) })
 
+gui.add(params, 'groundLevel', -10, 10, 0.05)
+   .name('Ground level (m)')
+
+const rotFolder = gui.addFolder('Rotation (deg)')
+rotFolder.add(params, 'rotX', -180, 180, 0.5).name('X  (pitch)')
+rotFolder.add(params, 'rotY', -180, 180, 0.5).name('Y  (roll)')
+rotFolder.add(params, 'rotZ', -180, 180, 0.5).name('Z  (yaw)')
+
 // ─── Frame queue ─────────────────────────────────────────────────────────────
 
 const frames = []
+
+// ─── Filtered cluster IDs (pedestrians suppressed by the classifier) ──────────
+
+const filteredClusterIds = new Set()
 
 // ─── Classification overlay ──────────────────────────────────────────────────
 // Maps cluster_id → { box: THREE.LineSegments, labelObj: CSS2DObject }
@@ -117,11 +139,10 @@ const clusterObjects = new Map()
 
 // Wireframe box material per label type
 const LABEL_COLORS = {
-  car:        0x00bfff,
-  truck:      0xff8c00,
-  pedestrian: 0x7fff00,
-  ground:     0x888888,
-  unknown:    0xffffff,
+  car:     0x00bfff,
+  truck:   0xff8c00,
+  ground:  0x888888,
+  unknown: 0xffffff,
 }
 
 function labelColor(label) {
@@ -167,12 +188,17 @@ function upsertCluster(c) {
     labelObj.visible = params.showLabels
     box.add(labelObj)
 
-    scene.add(box)
+    boxGroup.add(box)
     clusterObjects.set(c.cluster_id, { box, labelObj, labelDiv: div })
   }
 }
 
-function applyClassifications(classifications) {
+function applyClassifications(classifications, filteredIds) {
+  // Refresh the pedestrian (filtered) cluster ID set so buildGeometry() can
+  // suppress those points from the rendered cloud.
+  filteredClusterIds.clear()
+  for (const id of filteredIds) filteredClusterIds.add(id)
+
   const activeIds = new Set(classifications.map(c => c.cluster_id))
 
   // Remove boxes + labels for clusters no longer present.
@@ -182,7 +208,7 @@ function applyClassifications(classifications) {
     if (!activeIds.has(id)) {
       box.geometry.dispose()
       box.material.dispose()
-      scene.remove(box)
+      boxGroup.remove(box)
       labelDiv.remove()
       clusterObjects.delete(id)
     }
@@ -236,7 +262,10 @@ worker.onmessage = ({ data: msg }) => {
       break
 
     case 'classifications':
-      applyClassifications(msg.data.classifications ?? [])
+      applyClassifications(
+        msg.data.classifications ?? [],
+        msg.data.filtered_cluster_ids ?? [],
+      )
       break
   }
 }
@@ -264,18 +293,41 @@ function clusterColor(id, out) {
   hslToRgb(((id * 137.508) % 360) / 360, 0.85, 0.55, out)
 }
 
+// ─── Rotation helpers (pre-allocated to avoid per-frame heap pressure) ────────
+
+const _euler  = new THREE.Euler()
+const _rotMat = new THREE.Matrix4()
+const _vec    = new THREE.Vector3()
+
 // ─── Geometry rebuild (called once per animation frame) ──────────────────────
 
 function buildGeometry() {
   if (frames.length === 0) { geometry.setDrawRange(0, 0); return }
 
+  // Build rotation matrix from current GUI params (once per frame).
+  _euler.set(
+    THREE.MathUtils.degToRad(params.rotX),
+    THREE.MathUtils.degToRad(params.rotY),
+    THREE.MathUtils.degToRad(params.rotZ),
+    'XYZ',
+  )
+  _rotMat.makeRotationFromEuler(_euler)
+
+  // Sync box group rotation so boxes stay aligned with the rotated point cloud.
+  // Box centroids are stored in sensor-frame coordinates; rotating the group
+  // transforms them to world frame without touching each box individually.
+  boxGroup.rotation.copy(_euler)
+
   let zMin = Infinity, zMax = -Infinity
   if (params.colorMode === 'height') {
     for (const f of frames) {
       for (let i = 0; i < f.count; i++) {
-        const z = f.pos[3 * i + 2]
-        if (z < zMin) zMin = z
-        if (z > zMax) zMax = z
+        if (filteredClusterIds.has(f.clusterIds[i])) continue
+        _vec.set(f.pos[3 * i], f.pos[3 * i + 1], f.pos[3 * i + 2])
+        _vec.applyMatrix4(_rotMat)
+        if (_vec.z < params.groundLevel) continue
+        if (_vec.z < zMin) zMin = _vec.z
+        if (_vec.z > zMax) zMax = _vec.z
       }
     }
     if (zMin === zMax) zMax = zMin + 1
@@ -287,15 +339,26 @@ function buildGeometry() {
     for (let i = 0; i < f.count; i++) {
       if (offset >= MAX_POINTS) break done
 
+      const cid = f.clusterIds[i]
+
+      // Skip points belonging to filtered (pedestrian) clusters.
+      if (filteredClusterIds.has(cid)) continue
+
+      _vec.set(f.pos[3 * i], f.pos[3 * i + 1], f.pos[3 * i + 2])
+      _vec.applyMatrix4(_rotMat)
+
+      // Skip points below the ground level threshold (post-rotation world space).
+      if (_vec.z < params.groundLevel) continue
+
       const b = offset * 3
-      positions[b]     = f.pos[3 * i]
-      positions[b + 1] = f.pos[3 * i + 1]
-      positions[b + 2] = f.pos[3 * i + 2]
+      positions[b]     = _vec.x
+      positions[b + 1] = _vec.y
+      positions[b + 2] = _vec.z
 
       if (params.colorMode === 'cluster') {
-        clusterColor(f.clusterIds[i], _rgb)
+        clusterColor(cid, _rgb)
       } else if (params.colorMode === 'height') {
-        hslToRgb((1 - (f.pos[3 * i + 2] - zMin) / (zMax - zMin)) * 0.67, 1.0, 0.5, _rgb)
+        hslToRgb((1 - (_vec.z - zMin) / (zMax - zMin)) * 0.67, 1.0, 0.5, _rgb)
       } else {
         const v = f.intensities[i]
         _rgb[0] = _rgb[1] = _rgb[2] = v

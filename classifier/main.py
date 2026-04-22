@@ -18,17 +18,26 @@ Results are broadcast on port 9003 as JSON:
         "bbox":        [dx, dy, dz],
         "point_count": <int>
       }, ...
-    ]
+    ],
+    "filtered_cluster_ids": [<int>, ...]   # pedestrians suppressed from renderer
   }
+
+Classification results are also written to InfluxDB:
+  - Measurement "parking_detection" — one point per cluster per frame
+  - Measurement "frame_summary"     — one point per frame with label counts
 """
 
 import asyncio
+import datetime
 import json
 import logging
 import os
+import random
 
 import numpy as np
 import websockets
+from influxdb_client import Point
+from influxdb_client.client.influxdb_client_async import InfluxDBClientAsync
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,8 +45,16 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-WS_IN = os.getenv("LIDAR_WS_URL", "ws://localhost:9002")
+WS_IN       = os.getenv("LIDAR_WS_URL",      "ws://localhost:9002")
 WS_OUT_PORT = int(os.getenv("CLASSIFIER_PORT", "9003"))
+
+# InfluxDB connection — all values come from the shared .env / container env.
+_INFLUX_HOST   = os.getenv("DOCKER_INFLUXDB_INIT_HOST",         "localhost")
+_INFLUX_PORT   = os.getenv("DOCKER_INFLUXDB_INIT_PORT",         "8086")
+_INFLUX_URL    = f"http://{_INFLUX_HOST}:{_INFLUX_PORT}"
+_INFLUX_TOKEN  = os.getenv("DOCKER_INFLUXDB_INIT_ADMIN_TOKEN",  "")
+_INFLUX_ORG    = os.getenv("DOCKER_INFLUXDB_INIT_ORG",          "rtu")
+_INFLUX_BUCKET = os.getenv("DOCKER_INFLUXDB_INIT_BUCKET",       "rtusystem")
 
 # ---------------------------------------------------------------------------
 # Feature extraction
@@ -150,6 +167,14 @@ def classify_cluster(feat: dict) -> tuple[str, float]:
 # Frame processing
 # ---------------------------------------------------------------------------
 
+# Clusters larger than this are subsampled before feature extraction.
+# Keeps log10(count) within the range the prototypes were tuned for so that
+# dense-but-geometrically-valid clusters are not pushed to "unknown" by the
+# count dimension alone.  The bbox min/max is stable across large samples so
+# geometric features remain accurate.
+_MAX_CLASSIFY_POINTS = 1000
+
+
 def process_frame(raw: str) -> str:
     data = json.loads(raw)
     by_cluster: dict[int, list] = {}
@@ -161,11 +186,17 @@ def process_frame(raw: str) -> str:
         by_cluster.setdefault(cid, []).append(p)
 
     classifications = []
+    filtered_cluster_ids = []   # cluster IDs whose points should be hidden (pedestrians)
     for cid, points in by_cluster.items():
         if len(points) < 5:
             continue
+        if len(points) > _MAX_CLASSIFY_POINTS:
+            points = random.sample(points, _MAX_CLASSIFY_POINTS)
         feat = extract_features(points)
         label, confidence = classify_cluster(feat)
+        if label == "pedestrian":
+            filtered_cluster_ids.append(cid)
+            continue
         classifications.append({
             "cluster_id":  cid,
             "label":       label,
@@ -176,10 +207,68 @@ def process_frame(raw: str) -> str:
         })
 
     return json.dumps({
-        "stamp":           data.get("stamp", 0.0),
-        "id":              data.get("id", 0),
-        "classifications": classifications,
+        "stamp":                data.get("stamp", 0.0),
+        "id":                   data.get("id", 0),
+        "classifications":      classifications,
+        "filtered_cluster_ids": filtered_cluster_ids,
     })
+
+
+# ---------------------------------------------------------------------------
+# InfluxDB helpers
+# ---------------------------------------------------------------------------
+
+def _make_points(data: dict) -> list[Point]:
+    """Build InfluxDB Point objects from a classification result dict."""
+    stamp = data.get("stamp", 0.0)
+    ts = datetime.datetime.fromtimestamp(stamp, tz=datetime.timezone.utc)
+
+    classifications  = data.get("classifications", [])
+    filtered_ids     = data.get("filtered_cluster_ids", [])
+
+    points: list[Point] = []
+    counts: dict[str, int] = {}
+
+    for c in classifications:
+        label = c["label"]
+        counts[label] = counts.get(label, 0) + 1
+
+        points.append(
+            Point("parking_detection")
+            .tag("label", label)
+            .field("confidence",  float(c["confidence"]))
+            .field("point_count", int(c["point_count"]))
+            .field("cluster_id",  int(c["cluster_id"]))
+            .field("centroid_x",  float(c["centroid"][0]))
+            .field("centroid_y",  float(c["centroid"][1]))
+            .field("centroid_z",  float(c["centroid"][2]))
+            .field("bbox_dx",     float(c["bbox"][0]))
+            .field("bbox_dy",     float(c["bbox"][1]))
+            .field("bbox_dz",     float(c["bbox"][2]))
+            .time(ts)
+        )
+
+    # Per-frame summary — always written so dashboards show zero counts too.
+    points.append(
+        Point("frame_summary")
+        .field("car_count",        counts.get("car",     0))
+        .field("truck_count",      counts.get("truck",   0))
+        .field("ground_count",     counts.get("ground",  0))
+        .field("unknown_count",    counts.get("unknown", 0))
+        .field("pedestrian_count", len(filtered_ids))
+        .field("total_detections", len(classifications))
+        .time(ts)
+    )
+
+    return points
+
+
+async def _write_to_influx(write_api, data: dict) -> None:
+    try:
+        pts = _make_points(data)
+        await write_api.write(bucket=_INFLUX_BUCKET, record=pts)
+    except Exception as exc:
+        log.warning("InfluxDB write error: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -212,7 +301,7 @@ async def _broadcast(message: str) -> None:
 # WebSocket client (inbound — reads from lidar producer)
 # ---------------------------------------------------------------------------
 
-async def _consume() -> None:
+async def _consume(write_api) -> None:
     while True:
         try:
             async with websockets.connect(WS_IN, ping_interval=20, max_size=16 * 1024 * 1024) as ws:
@@ -221,6 +310,10 @@ async def _consume() -> None:
                     try:
                         result = process_frame(message)
                         await _broadcast(result)
+                        # Fire-and-forget so a slow InfluxDB write never delays the broadcast.
+                        asyncio.create_task(
+                            _write_to_influx(write_api, json.loads(result))
+                        )
                     except Exception as exc:
                         log.warning("Frame processing error: %s", exc)
         except Exception as exc:
@@ -235,7 +328,14 @@ async def _consume() -> None:
 async def _main() -> None:
     server = await websockets.serve(_ws_handler, "0.0.0.0", WS_OUT_PORT)
     log.info("Classifier WebSocket server listening on port %d", WS_OUT_PORT)
-    await _consume()
+
+    async with InfluxDBClientAsync(
+        url=_INFLUX_URL, token=_INFLUX_TOKEN, org=_INFLUX_ORG
+    ) as influx_client:
+        write_api = influx_client.write_api()
+        log.info("InfluxDB client ready — %s  bucket=%s", _INFLUX_URL, _INFLUX_BUCKET)
+        await _consume(write_api)
+
     server.close()
 
 

@@ -9,3 +9,13 @@ emulation:
   lidar_z: 1.0
   # scene_duration: 10.0
   scene_duration: 0.5
+
+  # Ground removal (RANSAC plane fit + signed-height sweep)
+  ransac_distance_threshold: 0.10   # metres — tight fit keeps plane accurate
+  ransac_max_iterations: 100
+  ground_above_plane: 0.25          # metres above fitted plane still treated as ground
+
+  # Euclidean cluster extraction
+  cluster_tolerance: 0.40           # metres — max neighbour distance within a cluster
+  cluster_min_size: 10
+  cluster_max_size: 25000

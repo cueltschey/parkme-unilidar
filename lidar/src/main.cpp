@@ -80,7 +80,24 @@ int main(int argc, char* argv[]) {
     }
 
     // Consumer runs its own worker thread internally
-    Consumer consumer(producer, cfg.websocket_port);
+    ConsumerConfig consumer_cfg;
+    consumer_cfg.ransac_distance_threshold = cfg.ransac_distance_threshold;
+    consumer_cfg.ransac_max_iterations     = cfg.ransac_max_iterations;
+    consumer_cfg.ground_above_plane        = cfg.ground_above_plane;
+    consumer_cfg.cluster_tolerance         = cfg.cluster_tolerance;
+    consumer_cfg.cluster_min_size          = cfg.cluster_min_size;
+    consumer_cfg.cluster_max_size          = cfg.cluster_max_size;
+
+    LOG_INFO("Ground removal: ransac_thresh=%.2fm  iters=%d  clearance=%.2fm",
+             consumer_cfg.ransac_distance_threshold,
+             consumer_cfg.ransac_max_iterations,
+             consumer_cfg.ground_above_plane);
+    LOG_INFO("Clustering: tolerance=%.2fm  min=%d  max=%d",
+             consumer_cfg.cluster_tolerance,
+             consumer_cfg.cluster_min_size,
+             consumer_cfg.cluster_max_size);
+
+    Consumer consumer(producer, cfg.websocket_port, consumer_cfg);
 
     LOG_INFO("Streaming point clouds to WebSocket...");
 
