@@ -131,7 +131,7 @@ std::string Consumer::cloudToJson(const unilidar_sdk2::PointCloudUnitree& cloud)
             pcl::EuclideanClusterExtraction<pcl::PointXYZ> ec;
             ec.setClusterTolerance(0.4);
             ec.setMinClusterSize(10);
-            ec.setMaxClusterSize(25000);
+            //ec.setMaxClusterSize(25000);
             ec.setSearchMethod(tree);
             ec.setInputCloud(pcl_cloud);
             ec.extract(cluster_indices);

@@ -6,6 +6,9 @@ services:
       context: lidar
       dockerfile: Dockerfile
 
+    volumes:
+      - ./data_files:/data
+
     ports:
       - 9002:9002
 
@@ -60,7 +63,7 @@ services:
 
 configs:
   unilidar.yml:
-    file: ${UNILIDAR_CONFIG:-configs/emulation.yaml}
+    file: ${UNILIDAR_CONFIG:-configs/replay.yaml}
 
 networks:
   default:

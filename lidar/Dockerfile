@@ -31,4 +31,4 @@ RUN cmake ../ && \
 
 WORKDIR /app
 
-CMD [ "sh", "-c", "/usr/local/bin/parkme_unilidar /lidar.conf $ARGS" ]
+CMD [ "sh", "-c", "/usr/local/bin/parkme_unilidar /unilidar.conf $ARGS" ]
